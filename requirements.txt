@@ -1,4 +1,5 @@
 chromadb
+pysqlite3-binary
 llama_parse
 langchain
 langchain_openai
