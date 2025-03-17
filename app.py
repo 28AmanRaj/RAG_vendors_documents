@@ -44,7 +44,7 @@ system_message = """You are an expert in analyzing vendor documents. Your task i
 
     ### **Note:**
       citation number can be anything like (CC 1.2, CC5.3, PI 1.2, A2.1, etc) combination of alpha-numeric.
-      Do Not add any unrelevant control numbers
+      Before adding citation, make sure that the information is correct.
       There can be more than one relevant pdf, add all relevant pdf name and respective page number in citation section seperated by ",".
       DO NOT halucinate with wrong infromation.
       Only use context to answer question, do not use your own knowledge
@@ -54,7 +54,7 @@ system_message = """You are an expert in analyzing vendor documents. Your task i
 
 def answer_query(query, retriever,system_prompt):
     # Retrieve relevant document chunks
-    hybrid_chunks = retriever.get_relevant_documents(query)
+    hybrid_chunks = retriever.invoke(query)
     context = ""
 
     for chunk in hybrid_chunks:
