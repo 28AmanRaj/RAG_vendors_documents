@@ -1,0 +1,6 @@
+llama_parse
+langchain
+langchain_openai
+langchain_chroma
+streamlit
+
