@@ -1,3 +1,4 @@
+chromadb
 llama_parse
 langchain
 langchain_openai
