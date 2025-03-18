@@ -3,6 +3,7 @@ langchain
 langchain_openai
 langchain_chroma
 streamlit
+faiss_cpu
 chromadb
-pysqlite3-binary
-
+langchain_community
+rank_bm25

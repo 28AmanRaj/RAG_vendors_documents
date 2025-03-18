@@ -9,13 +9,79 @@ import pickle
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_openai import ChatOpenAI
+from langchain_community.vectorstores import FAISS
 import asyncio
 import nest_asyncio
+import faiss
+from langchain_community.docstore.in_memory import InMemoryDocstore
 nest_asyncio.apply()
 
 
-system_message = """You are an expert in analyzing vendor documents. Your task is to answer user questions using only the content given to you. You will be provided with question and context.
-   ### **Instructions for Answering User Queries:**
+
+def store_in_faiss_db(langchain_documents):
+    """
+    Stores LangChain documents in a FAISS vector database.
+    Handles saving/loading the FAISS index and document metadata separately.
+    """
+    faiss_index_path = "faiss_index"
+    metadata_path = "faiss_metadata.pkl"
+    embedding_model = OpenAIEmbeddings()
+
+    if os.path.exists(faiss_index_path) and os.path.exists(metadata_path):
+        st.info(f"✅ Loading existing FAISS DB from `{faiss_index_path}`")
+        
+        # Load FAISS index
+        faiss_index = faiss.read_index(faiss_index_path)
+        
+        # Load metadata safely
+        with open(metadata_path, "rb") as f:
+            saved_data = pickle.load(f)
+
+        # Ensure docstore is of type InMemoryDocstore
+        if isinstance(saved_data, InMemoryDocstore):
+            docstore = saved_data
+            index_to_docstore_id = {i: k for i, k in enumerate(docstore._dict.keys())}  # Rebuild ID mapping
+        elif isinstance(saved_data, dict):
+            docstore = saved_data.get("docstore", InMemoryDocstore({}))
+            index_to_docstore_id = saved_data.get("index_to_docstore_id", {})
+        else:
+            st.error("❌ Invalid FAISS metadata format.")
+            return None
+
+        # Reconstruct FAISS VectorStore
+        vector_db = FAISS(
+            embedding_model,
+            index=faiss_index,
+            docstore=docstore,
+            index_to_docstore_id=index_to_docstore_id
+        )
+    
+    else:
+        st.warning("⚠️ FAISS DB not found! Creating new embeddings...")
+        
+        # Create FAISS VectorStore
+        vector_db = FAISS.from_documents(langchain_documents, embedding_model)
+        
+        # Save FAISS index
+        faiss.write_index(vector_db.index, faiss_index_path)
+        
+        # Save document metadata separately
+        with open(metadata_path, "wb") as f:
+            pickle.dump(
+                {"docstore": vector_db.docstore, "index_to_docstore_id": vector_db.index_to_docstore_id},
+                f
+            )
+
+        st.success(f"✅ FAISS DB created and saved at `{faiss_index_path}`")
+        
+
+    return vector_db
+
+
+
+
+system_message = """"You are an expert in analyzing vendor documents. Your task is to answer user questions using only the content given to you. You will be provided with question and context.
+   **Instructions for Answering User Queries:**
 
     1. **Review the Question:**  
       - Analyze the user's question and determine the required information.
@@ -32,7 +98,7 @@ system_message = """You are an expert in analyzing vendor documents. Your task i
     4. **If No Sufficient Information is Found:**
       - Respond with **“Needs Additional Information”** instead of guessing.
 
-    ### **Output Format:**
+    **Output Format:**
         Provide a concise answer based on the context.
         When providing your final answer, strictly adhere to the answer Format:    <Answer>: ...  <Citation(s)>: ...  <Controls or Appendix>: ...  <Result>: Pass / Fail / Needs Additional Information.
 
@@ -42,7 +108,7 @@ system_message = """You are an expert in analyzing vendor documents. Your task i
         Controls or Appendix: [Relevant control numbers]
         Result: [Pass / Fail / Needs Additional Information]
 
-    ### **Note:**
+    **Note:**
       citation number can be anything like (CC 1.2, CC5.3, PI 1.2, A2.1, etc) combination of alpha-numeric.
       Before adding citation, make sure that the information is correct.
       There can be more than one relevant pdf, add all relevant pdf name and respective page number in citation section seperated by ",".
@@ -100,24 +166,23 @@ def create_hybrid_retriever(vector_db, langchain_documents):
 
     return ensemble_retriever
 
-def store_in_chroma_db(langchain_documents):
-    chroma_db_path = "chroma_db"  
-    embedding_model = OpenAIEmbeddings()
+# def store_in_chroma_db(langchain_documents):
+#     chroma_db_path = "chroma_db"  
+#     embedding_model = OpenAIEmbeddings()
 
-    if os.path.exists(chroma_db_path):
-        vector_db = Chroma(persist_directory=chroma_db_path, embedding_function=embedding_model)
-        st.info(f"✅ Loaded existing ChromaDB from `{chroma_db_path}`")
-    else:
-        st.warning("⚠️ ChromaDB not found! Creating new embeddings...")
-        vector_db = Chroma.from_documents(langchain_documents, embedding_model, persist_directory=chroma_db_path)
-        st.success(f"✅ ChromaDB created and saved at `{chroma_db_path}`")
+#     if os.path.exists(chroma_db_path):
+#         vector_db = Chroma(persist_directory=chroma_db_path, embedding_function=embedding_model)
+#         st.info(f"✅ Loaded existing ChromaDB from `{chroma_db_path}`")
+#     else:
+#         st.warning("⚠️ ChromaDB not found! Creating new embeddings...")
+#         vector_db = Chroma.from_documents(langchain_documents, embedding_model, persist_directory=chroma_db_path)
+#         st.success(f"✅ ChromaDB created and saved at `{chroma_db_path}`")
 
-    # Verify stored document count
-    num_vectors = vector_db._collection.count()
-    st.write(f"🔢 **Total documents indexed in ChromaDB:** {num_vectors}")
+#     # Verify stored document count
+#     num_vectors = vector_db._collection.count()
+#     st.write(f"🔢 **Total documents indexed in ChromaDB:** {num_vectors}")
 
-    return vector_db
-
+#     return vector_db
 st.set_page_config(page_title="RAG Vendor Documents", layout="wide")
 st.title("📄 RAG Vendor Document Processor")
 st.sidebar.header("⚙️ Configuration")
@@ -217,7 +282,9 @@ if uploaded_files:
 
 
     # Store documents in ChromaDB
-    vector_db = store_in_chroma_db(langchain_documents)
+    # vector_db = store_in_chroma_db(langchain_documents)
+    vector_db = store_in_faiss_db(langchain_documents)
+
 
 
     retriever = create_hybrid_retriever(vector_db, langchain_documents)
@@ -232,4 +299,9 @@ if uploaded_files:
         for i, query in enumerate(queries, start=1):
             st.write(f"### 🔹 Query {i}: {query}")  
             response = answer_query(query, retriever, system_message)  # Process each query
-            st.success(response)  # Show the response
+            if hasattr(response, "content"):  
+                clean_response = response.content  # Extract only the answer text
+            else:
+                clean_response = str(response)  # Fallback in case response is a plain string
+
+            st.success(clean_response)
