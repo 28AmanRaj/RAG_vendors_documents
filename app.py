@@ -1,7 +1,6 @@
 import streamlit as st
 from llama_parse import LlamaParse, ResultType
 from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
 from langchain.schema import Document
 from typing import List
 import os

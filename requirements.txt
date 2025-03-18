@@ -1,9 +1,7 @@
 llama_parse
 langchain
 langchain_openai
-langchain_chroma
 streamlit
 faiss_cpu
-chromadb
 langchain_community
 rank_bm25
