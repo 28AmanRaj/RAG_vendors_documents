@@ -15,6 +15,9 @@ import faiss
 from langchain_community.docstore.in_memory import InMemoryDocstore
 nest_asyncio.apply()
 
+st.cache_data.clear()
+st.cache_resource.clear()
+
 
 
 def store_in_faiss_db(langchain_documents):
@@ -185,15 +188,48 @@ def create_hybrid_retriever(vector_db, langchain_documents):
 st.set_page_config(page_title="RAG Vendor Documents", layout="wide")
 st.title("📄 RAG Vendor Document Processor")
 st.sidebar.header("⚙️ Configuration")
+# Initialize session state variables
+if "llama_api_key" not in st.session_state:
+    st.session_state.llama_api_key = ""
+if "openai_api_key" not in st.session_state:
+    st.session_state.openai_api_key = ""
+if "rerun_flag" not in st.session_state:
+    st.session_state.rerun_flag = False  # Used to trigger rerun
 
+# Input for API keys
 llama_api_key = st.sidebar.text_input("Llama Cloud API Key", type="password")
 openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
+# Check if API key has changed
+if (llama_api_key and llama_api_key != st.session_state.llama_api_key) or \
+   (openai_api_key and openai_api_key != st.session_state.openai_api_key):
+
+    # Clear cache
+    st.cache_data.clear()
+    st.cache_resource.clear()
+
+    # Update session state
+    st.session_state.llama_api_key = llama_api_key
+    st.session_state.openai_api_key = openai_api_key
+
+    # Set rerun flag
+    st.session_state.rerun_flag = True
+
+# Force rerun if flag is set
+if st.session_state.rerun_flag:
+    st.session_state.rerun_flag = False  # Reset flag
+    st.rerun()
+
+# Set environment variables
 if llama_api_key:
     os.environ["LLAMA_CLOUD_API_KEY"] = llama_api_key
 if openai_api_key:
     os.environ["OPENAI_API_KEY"] = openai_api_key
 
+# Stop execution if keys are missing
+if not llama_api_key or not openai_api_key:
+    st.error("❌ Please enter both Llama Cloud API Key and OpenAI API Key before uploading documents.")
+    st.stop()  # Stop execution if keys are missing
 
 uploaded_files = st.sidebar.file_uploader("Upload vendor documents", accept_multiple_files=True, type="pdf")
 
