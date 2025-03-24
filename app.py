@@ -13,6 +13,7 @@ import asyncio
 import nest_asyncio
 import faiss
 from langchain_community.docstore.in_memory import InMemoryDocstore
+import shutil
 nest_asyncio.apply()
 
 st.cache_data.clear()
@@ -195,6 +196,33 @@ if "openai_api_key" not in st.session_state:
     st.session_state.openai_api_key = ""
 if "rerun_flag" not in st.session_state:
     st.session_state.rerun_flag = False  # Used to trigger rerun
+
+# Clear processed documents and FAISS database on each run
+processed_docs_dir = "processed_docs"
+faiss_index_path = "faiss_index"
+metadata_path = "faiss_metadata.pkl"
+
+if os.path.exists(processed_docs_dir):
+    try:
+        shutil.rmtree(processed_docs_dir)  # Delete the directory and its contents
+        st.info("🗑️ Cleared processed documents directory.")
+    except Exception as e:
+        st.error(f"❌ Failed to clear processed docs: {e}")
+
+if os.path.exists(faiss_index_path):
+    try:
+        os.remove(faiss_index_path)
+        st.info("🗑️ Cleared FAISS index.")
+    except Exception as e:
+        st.error(f"❌ Failed to clear FAISS index: {e}")
+
+if os.path.exists(metadata_path):
+    try:
+        os.remove(metadata_path)
+        st.info("🗑️ Cleared FAISS metadata.")
+    except Exception as e:
+        st.error(f"❌ Failed to clear FAISS metadata: {e}")
+# --- END OF CLEAR STORAGE SECTION ---
 
 # Input for API keys
 llama_api_key = st.sidebar.text_input("Llama Cloud API Key", type="password")
