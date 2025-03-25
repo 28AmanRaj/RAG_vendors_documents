@@ -2,17 +2,13 @@ import streamlit as st
 from llama_parse import LlamaParse, ResultType
 from langchain_openai import OpenAIEmbeddings
 from langchain.schema import Document
-from typing import List
 import os
-import pickle
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import FAISS
-import asyncio
 import nest_asyncio
-import faiss
-from langchain_community.docstore.in_memory import InMemoryDocstore
+import io
 nest_asyncio.apply()
 
 
@@ -20,61 +16,21 @@ nest_asyncio.apply()
 def store_in_faiss_db(langchain_documents):
     """
     Stores LangChain documents in a FAISS vector database.
-    Handles saving/loading the FAISS index and document metadata separately.
+    Uses session state instead of saving to disk.
     """
-    faiss_index_path = "faiss_index"
-    metadata_path = "faiss_metadata.pkl"
     embedding_model = OpenAIEmbeddings()
 
-    if os.path.exists(faiss_index_path) and os.path.exists(metadata_path):
-        st.info(f"✅ Loading existing FAISS DB from `{faiss_index_path}`")
-        
-        # Load FAISS index
-        faiss_index = faiss.read_index(faiss_index_path)
-        
-        # Load metadata safely
-        with open(metadata_path, "rb") as f:
-            saved_data = pickle.load(f)
-
-        # Ensure docstore is of type InMemoryDocstore
-        if isinstance(saved_data, InMemoryDocstore):
-            docstore = saved_data
-            index_to_docstore_id = {i: k for i, k in enumerate(docstore._dict.keys())}  # Rebuild ID mapping
-        elif isinstance(saved_data, dict):
-            docstore = saved_data.get("docstore", InMemoryDocstore({}))
-            index_to_docstore_id = saved_data.get("index_to_docstore_id", {})
-        else:
-            st.error("❌ Invalid FAISS metadata format.")
-            return None
-
-        # Reconstruct FAISS VectorStore
-        vector_db = FAISS(
-            embedding_model,
-            index=faiss_index,
-            docstore=docstore,
-            index_to_docstore_id=index_to_docstore_id
-        )
-    
+    # Use session state for FAISS to ensure isolation per user session
+    if "faiss_db" in st.session_state:
+        st.info(f"✅ Using existing FAISS DB in session")
+        vector_db = st.session_state.faiss_db
     else:
-        st.warning("⚠️ FAISS DB not found! Creating new embeddings...")
-        
-        # Create FAISS VectorStore
+        st.warning("⚠️ Creating new FAISS embeddings...")
         vector_db = FAISS.from_documents(langchain_documents, embedding_model)
-        
-        # Save FAISS index
-        faiss.write_index(vector_db.index, faiss_index_path)
-        
-        # Save document metadata separately
-        with open(metadata_path, "wb") as f:
-            pickle.dump(
-                {"docstore": vector_db.docstore, "index_to_docstore_id": vector_db.index_to_docstore_id},
-                f
-            )
-
-        st.success(f"✅ FAISS DB created and saved at `{faiss_index_path}`")
-        
+        st.session_state.faiss_db = vector_db  # Store in session
 
     return vector_db
+
 
 
 
@@ -142,46 +98,48 @@ def answer_query(query, retriever,system_prompt):
     return response
 
 def convert_to_langchain_documents(parsed_files):
+    """
+    Converts parsed document objects into LangChain Document format.
+    """
     langchain_docs = []
-    for file_path in parsed_files:
-        with open(file_path, "rb") as file:  
-            documents = pickle.load(file)  
 
-        
-        for doc in documents:
-            langchain_doc = Document(page_content=doc.text, metadata=doc.metadata)
-            langchain_docs.append(langchain_doc)
+    for doc in parsed_files:
+        langchain_doc = Document(page_content=doc.text, metadata=doc.metadata)
+        langchain_docs.append(langchain_doc)
 
     return langchain_docs
 
+
+
 def create_hybrid_retriever(vector_db, langchain_documents):
+    if not langchain_documents:
+        st.error("No documents to process!")
+        return None
+
+    
+    for doc in langchain_documents:
+        if not hasattr(doc, 'page_content') or not hasattr(doc, 'metadata'):
+            st.error(f"Invalid document format: {doc}")
+            return None
+
     vectorstore_retriever = vector_db.as_retriever(search_kwargs={"k": 8})
-    keyword_retriever = BM25Retriever.from_documents(langchain_documents, k=4)
+
+    try:
+        keyword_retriever = BM25Retriever.from_documents(langchain_documents, k=4)
+    except ValueError as e:
+        st.error(f"Error in BM25Retriever: {e}")
+        st.error(f"Documents: {langchain_documents}")
+        return None
 
     ensemble_retriever = EnsembleRetriever(
         retrievers=[vectorstore_retriever, keyword_retriever],
-        weights=[0.6, 0.4]  
+        weights=[0.6, 0.4] 
     )
 
     return ensemble_retriever
 
-# def store_in_chroma_db(langchain_documents):
-#     chroma_db_path = "chroma_db"  
-#     embedding_model = OpenAIEmbeddings()
 
-#     if os.path.exists(chroma_db_path):
-#         vector_db = Chroma(persist_directory=chroma_db_path, embedding_function=embedding_model)
-#         st.info(f"✅ Loaded existing ChromaDB from `{chroma_db_path}`")
-#     else:
-#         st.warning("⚠️ ChromaDB not found! Creating new embeddings...")
-#         vector_db = Chroma.from_documents(langchain_documents, embedding_model, persist_directory=chroma_db_path)
-#         st.success(f"✅ ChromaDB created and saved at `{chroma_db_path}`")
 
-#     # Verify stored document count
-#     num_vectors = vector_db._collection.count()
-#     st.write(f"🔢 **Total documents indexed in ChromaDB:** {num_vectors}")
-
-#     return vector_db
 st.set_page_config(page_title="RAG Vendor Documents", layout="wide")
 st.title("📄 RAG Vendor Document Processor")
 st.sidebar.header("⚙️ Configuration")
@@ -211,83 +169,98 @@ if not st.session_state.llama_api_key or not st.session_state.openai_api_key:
 
 
 
+if "uploaded_files" not in st.session_state:
+    st.session_state.uploaded_files = {}
+
 uploaded_files = st.sidebar.file_uploader("Upload vendor documents", accept_multiple_files=True, type="pdf")
 
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        file_bytes = uploaded_file.getvalue()  # Get binary content
+        st.session_state.uploaded_files[uploaded_file.name] = file_bytes  # Store in session
 
 
 
-def load_and_process_documents(file_paths: List[str], output_dir: str):
+
+def load_and_process_documents(uploaded_files):
     """
-    Parses documents using LlamaParse and saves them as Pickle files.
-    Uses caching to avoid re-parsing if already processed.
+    Parses documents from uploaded files and stores them in session state.
     """
-    st.write("📌 **Parsing documents...**")
-
     system_prompt_append = """
-    If a row in table does not contain a value in the No. column, use the last available No. from the previous rows in the same table.
-    If a table starts without an explicit No. in the first row, use the last No. from the previous table.
-    If table's first row does not contain a value in the No. column, then use the last value seen to populate it.
-    """
+#     If a row in table does not contain a value in the No. column, use the last available No. from the previous rows in the same table.
+#     If a table starts without an explicit No. in the first row, use the last No. from the previous table.
+#     If table's first row does not contain a value in the No. column, then use the last value seen to populate it.
+#     """
 
     parser = LlamaParse(result_type=ResultType.MD, system_prompt_append=system_prompt_append, parsing_mode="parse_document_with_llm")
 
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    if "parsed_files" not in st.session_state:
+        st.session_state.parsed_files = {}
 
     parsed_files = []
-    progress_bar = st.progress(0)  # Streamlit progress bar
 
-    for idx, file_path in enumerate(file_paths):
-        file_name = os.path.basename(file_path)
-        output_file = os.path.join(output_dir, f"parsed_{file_name}.pkl")
+    for file_name, file_bytes in uploaded_files.items():
+        if file_name in st.session_state.parsed_files:
+            st.write(f"✅ **Skipping already parsed file:** {file_name}")
+            parsed_files.extend(st.session_state.parsed_files[file_name])
+            continue  # Skip re-parsing
 
-        if os.path.exists(output_file):
-            st.info(f"✅ Loading cached document: **{file_name}**")
-            with open(output_file, 'rb') as file:
-                documents = pickle.load(file)
-        else:
-            st.warning(f"⚠️ Parsing document: **{file_name}** ...")
-            try:
-                documents = parser.load_data(file_path)  # ✅ No async handling needed
+        try:
+            st.write(f"📄 **Processing file:** {file_name}")
+            file_stream = io.BytesIO(file_bytes)
 
-                # Add metadata
-                for doc in documents:
-                    if not hasattr(doc, "metadata"):
-                        doc.metadata = {}
-                    doc.metadata["file_name"] = file_name
+            # Parse the document
+            documents = parser.load_data(file_stream, extra_info={"file_name": file_name})
+            for doc in documents:
+                doc.metadata["file_name"] = file_name
 
-                # Save parsed document
-                with open(output_file, 'wb') as file:
-                    pickle.dump(documents, file)
+            # Store parsed documents
+            st.session_state.parsed_files[file_name] = documents
+            parsed_files.extend(documents)
 
-            except Exception as e:
-                st.error(f"❌ Error while parsing '{file_name}': {e}")
-                continue
+            st.write(f"✅ Successfully parsed {len(documents)} documents from {file_name}.")
 
-        parsed_files.append(output_file)
-        progress_bar.progress((idx + 1) / len(file_paths))
-    st.success("✅ All documents processed successfully!")
+        except Exception as e:
+            st.error(f"❌ Error processing {file_name}: {e}")
+
     return parsed_files
 
+
+
+
+# Process the documents after uploading
+if st.session_state.uploaded_files:
+    parsed_docs = load_and_process_documents(st.session_state.uploaded_files)
+
+    # Store parsed documents in session
+    st.session_state.parsed_docs = parsed_docs
+
+
 if uploaded_files:
-    output_dir = "processed_docs"
-    os.makedirs(output_dir, exist_ok=True)
+    # Store uploaded files in session state instead of saving them to disk
+    if "uploaded_files" not in st.session_state:
+        st.session_state.uploaded_files = {}
 
-    # Save uploaded files to local directory
-    file_paths = []
     for uploaded_file in uploaded_files:
-        file_path = os.path.join(output_dir, uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        file_paths.append(file_path)
+        file_bytes = uploaded_file.getvalue()  # Get binary content
+        if uploaded_file.name not in st.session_state.uploaded_files:
+            st.session_state.uploaded_files[uploaded_file.name] = file_bytes  # Store in session
 
-    # 🛠 Call the function to process documents
-    parsed_files = load_and_process_documents(file_paths, output_dir)
+    # 🛠 Process documents only if they haven't been processed before
+    if "parsed_docs" not in st.session_state:
+        parsed_files = load_and_process_documents(st.session_state.uploaded_files)
+        st.session_state.parsed_docs = parsed_files  # Store parsed docs
+    else:
+        parsed_files = st.session_state.parsed_docs
 
+    # Convert parsed documents into LangChain format
     langchain_documents = convert_to_langchain_documents(parsed_files)
+
     if langchain_documents:
+        st.session_state.langchain_documents = langchain_documents  # Store in session
 
         st.success(f"✅ Converted {len(langchain_documents)} documents into LangChain format!")
+
         st.write(f"📝 **Total Parsed Files:** {len(parsed_files)}")
         st.write(f"📄 **Total LangChain Documents:** {len(langchain_documents)}")
 
@@ -295,16 +268,16 @@ if uploaded_files:
     all_docs_valid = all(isinstance(doc, Document) for doc in langchain_documents)
     st.write(f"✅ **All files converted correctly:** {all_docs_valid}")
 
-
-    # Store documents in ChromaDB
-    # vector_db = store_in_chroma_db(langchain_documents)
+    # Store documents in FAISS (User-specific)
     vector_db = store_in_faiss_db(langchain_documents)
+    st.session_state.vector_db = vector_db  # Store in session
 
-
-
+    # Create a hybrid retriever using stored FAISS
     retriever = create_hybrid_retriever(vector_db, langchain_documents)
+    st.session_state.retriever = retriever  # Store in session
 
 
+if "retriever" in st.session_state:
     st.write("## 🔎 Ask Multiple Questions")
     user_queries = st.text_area("Enter multiple queries (one per line):")
 
@@ -313,10 +286,7 @@ if uploaded_files:
 
         for i, query in enumerate(queries, start=1):
             st.write(f"### 🔹 Query {i}: {query}")  
-            response = answer_query(query, retriever, system_message)  # Process each query
-            if hasattr(response, "content"):  
-                clean_response = response.content  # Extract only the answer text
-            else:
-                clean_response = str(response)  # Fallback in case response is a plain string
+            response = answer_query(query, st.session_state.retriever, system_message)  # Use session retriever
+            clean_response = response.content if hasattr(response, "content") else str(response)  # Extract response text
 
             st.success(clean_response)
