@@ -13,7 +13,11 @@ import asyncio
 import nest_asyncio
 import faiss
 from langchain_community.docstore.in_memory import InMemoryDocstore
+import shutil
 nest_asyncio.apply()
+
+st.cache_data.clear()
+st.cache_resource.clear()
 
 
 
@@ -65,7 +69,7 @@ def store_in_faiss_db(langchain_documents):
         faiss.write_index(vector_db.index, faiss_index_path)
         
         # Save document metadata separately
-        with open(metadata_path, "wb") as f:
+        with open(metadata_path, "wb") as f:  
             pickle.dump(
                 {"docstore": vector_db.docstore, "index_to_docstore_id": vector_db.index_to_docstore_id},
                 f
@@ -185,15 +189,75 @@ def create_hybrid_retriever(vector_db, langchain_documents):
 st.set_page_config(page_title="RAG Vendor Documents", layout="wide")
 st.title("📄 RAG Vendor Document Processor")
 st.sidebar.header("⚙️ Configuration")
+# Initialize session state variables
+if "llama_api_key" not in st.session_state:
+    st.session_state.llama_api_key = ""
+if "openai_api_key" not in st.session_state:
+    st.session_state.openai_api_key = ""
+if "rerun_flag" not in st.session_state:
+    st.session_state.rerun_flag = False  # Used to trigger rerun
 
+# Clear processed documents and FAISS database on each run
+processed_docs_dir = "processed_docs"
+faiss_index_path = "faiss_index"
+metadata_path = "faiss_metadata.pkl"
+
+if os.path.exists(processed_docs_dir):
+    try:
+        shutil.rmtree(processed_docs_dir)  # Delete the directory and its contents
+        st.info("🗑️ Cleared processed documents directory.")
+    except Exception as e:
+        st.error(f"❌ Failed to clear processed docs: {e}")
+
+if os.path.exists(faiss_index_path):
+    try:
+        os.remove(faiss_index_path)
+        st.info("🗑️ Cleared FAISS index.")
+    except Exception as e:
+        st.error(f"❌ Failed to clear FAISS index: {e}")
+
+if os.path.exists(metadata_path):
+    try:
+        os.remove(metadata_path)
+        st.info("🗑️ Cleared FAISS metadata.")
+    except Exception as e:
+        st.error(f"❌ Failed to clear FAISS metadata: {e}")
+# --- END OF CLEAR STORAGE SECTION ---
+
+# Input for API keys
 llama_api_key = st.sidebar.text_input("Llama Cloud API Key", type="password")
 openai_api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
+# Check if API key has changed
+if (llama_api_key and llama_api_key != st.session_state.llama_api_key) or \
+   (openai_api_key and openai_api_key != st.session_state.openai_api_key):
+
+    # Clear cache
+    st.cache_data.clear()
+    st.cache_resource.clear()
+
+    # Update session state
+    st.session_state.llama_api_key = llama_api_key
+    st.session_state.openai_api_key = openai_api_key
+
+    # Set rerun flag
+    st.session_state.rerun_flag = True
+
+# Force rerun if flag is set
+if st.session_state.rerun_flag:
+    st.session_state.rerun_flag = False  # Reset flag
+    st.rerun()
+
+# Set environment variables
 if llama_api_key:
     os.environ["LLAMA_CLOUD_API_KEY"] = llama_api_key
 if openai_api_key:
     os.environ["OPENAI_API_KEY"] = openai_api_key
 
+# Stop execution if keys are missing
+if not llama_api_key or not openai_api_key:
+    st.error("❌ Please enter both Llama Cloud API Key and OpenAI API Key before uploading documents.")
+    st.stop()  # Stop execution if keys are missing
 
 uploaded_files = st.sidebar.file_uploader("Upload vendor documents", accept_multiple_files=True, type="pdf")
 
